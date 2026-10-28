@@ -146,7 +146,9 @@ try {
             New-Item -ItemType Directory -Path "$dir/unsigned" | Out-Null
             Copy-Item -LiteralPath $path -Destination "$dir/unsigned/Zephium.exe"
             Write-Atomic "$dir/request.json" (@{role=$Role; path=$path; sha256=(Get-FileHash -LiteralPath $path).Hash} | ConvertTo-Json)
-            Wait-File "$dir/ready" 4200
+            # Allow 80 minutes after this request is ready; the enclosing 85-minute
+            # step also budgets for the hook to start. Its verifier is bounded.
+            Wait-File "$dir/ready" 4800
             if ((Get-FileHash -LiteralPath $path).Hash -ne (Read-Json "$dir/request.json").sha256) { throw 'Input changed while signing' }
             Assert-Signature "$dir/signed/Zephium.exe"
             Copy-Item "$dir/signed/Zephium.exe" -Destination $path -Force

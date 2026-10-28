@@ -87,16 +87,61 @@ existing install on its current version.
    git push origin v1.0.0-beta.1
    ```
 
-6. **Review the draft** once the workflow finishes: install the DMG and the
-   Windows installer, check the notes, then **Publish**. Keep "Set as the
+6. **Review the draft** once the workflow finishes. For a stable version,
+   review the final assets below and use **Publish stable draft**. For a prerelease,
+   install the DMG and Windows installer and review the notes before publication. Keep "Set as the
    latest release" checked and leave "Set as a pre-release" unchecked, even for
    betas: `releases/latest` skips pre-releases, and both the website and the
    updater resolve through it.
 
-To rebuild a tag (for example after a flaky runner), run **Actions → Release →
-Run workflow** with the tag, or `gh workflow run release.yml -f tag=v1.0.0-beta.1`.
+To rebuild a tag (for example after a flaky runner), select the same tag in
+both **Actions → Release → Run workflow → Use workflow from** and the `tag`
+input. The gate binds that tag to the workflow commit; CI and both build jobs
+then check out the immutable `github.sha`, even if the tag moves later. With the
+CLI, pass the tag ref explicitly:
+
+```sh
+gh workflow run release.yml --ref v1.0.0-beta.1 -f tag=v1.0.0-beta.1
+```
+
+The [CLI defaults to the default branch](https://cli.github.com/manual/gh_workflow_run)
+without `--ref`. Release refuses a different workflow ref or checkout commit so
+its workflow `head_sha` and provenance describe the candidate's tag commit.
 An existing draft for that tag is replaced; a published release is never
 touched.
+
+## Draft review and stable publication
+
+Draft creation requires main CI for the exact release commit, both build/sign
+jobs, the release security gate and every WebKit component shard. Components use
+one retry (`--retry=1`) to tolerate an isolated runner failure.
+
+For an urgent release, dispatch **Release** from the candidate tag with the same
+`tag` input and set the boolean **`emergency`** input to `true`. This skips only
+components; main CI, security, build and signing checks still gate the draft.
+The generated release notes visibly state **EMERGENCY: Component tests were
+skipped for this release.** Review that disclosure before publishing.
+
+Install the draft's final DMG and Windows installer and review native behavior,
+platform signing, updater signatures and provenance on the shipping platforms.
+Hosted checks provide source/API coverage; retain useful device results with the
+candidate commit and artifact hashes so a rebuild cannot be mistaken for the
+bytes reviewed.
+
+For a stable `vMAJOR.MINOR.PATCH`, dispatch **Publish stable draft** with the
+existing annotated tag. It requires successful main-push CI and a successful
+Release run from that tag for the same commit. The Release run has already gated
+components, or recorded the explicit emergency bypass. The publisher downloads
+the existing draft's assets and verifies the DMG, macOS updater archive and
+Windows installer attestations against that commit and `release.yml` before
+publishing. It never builds or replaces assets. Release and publication share a
+same-tag workflow lock, and publication jobs serialize their latest-release check
+and edit across tags. A stable draft becomes latest only when its canonical
+semantic version is newer than the current latest stable release; equal or older
+versions explicitly use `--latest=false`. An absent latest release (HTTP 404)
+allows the first stable promotion; other lookup errors or malformed latest tags
+stop publication. Maintainers can also publish
+reviewed drafts through GitHub's release UI.
 
 ## Published assets
 
@@ -111,9 +156,9 @@ contract:
 | `latest.json` | Updater manifest (`darwin-aarch64[-app]`, `windows-x86_64[-nsis]`) |
 | `SHA256SUMS` | Digests of every other asset |
 
-Renaming does not invalidate an updater signature: minisign signs the bytes,
-and the build-time file name in its trusted comment is not checked by the
-updater.
+Renaming does not invalidate an updater signature. Windows signatures bind the
+release version and `windows-x86_64-nsis` target as well as the final bytes;
+the updater rejects an unbound or mismatched signature.
 
 ## What the workflow verifies
 
@@ -143,8 +188,16 @@ The Windows job signs the packaged browser, generated uninstaller, and final
 installer in that order. Each production request requires approval in SignPath.
 Missing credentials, a missing certificate pin, or failed signature checks stop
 the job; there is no unsigned fallback. Updater signing runs **after** all
-Authenticode changes. Preserve the security workstream's version-bound updater
-signature as the last signature step when integrating both changes.
+Authenticode changes. Exactly one unconditional `cargo xtask sign-windows-updater`
+step signs the final bytes and binds the version and `windows-x86_64-nsis` target.
+No later step may replace this signature.
+
+The Windows job allows 75 minutes for compilation, 85 minutes for each of the
+three signing stages, and 30 minutes for setup, verification and uploads (360
+minutes total). Each stage waits up to 60 minutes for approval, five minutes
+for service availability and three minutes for download. Each stage also allows
+ten minutes for the packaging hook to become ready. Its step cap includes
+verification and other overhead; timeouts stop the release.
 
 SmartScreen reputation can still affect newly signed downloads.
 After publishing, submit `Zephium-Windows-x64-setup.exe` at

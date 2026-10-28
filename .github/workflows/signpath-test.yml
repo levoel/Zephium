@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       SIGNPATH_POLICY: test-signing
       SIGNPATH_CERT_THUMBPRINT: ${{ vars.SIGNPATH_TEST_CERT_THUMBPRINT }}
@@ -52,12 +54,14 @@ jobs:
           cache-on-failure: true
       - run: pnpm install --frozen-lockfile
       - name: Read version and create notices
+        id: version
         shell: pwsh
         run: |
           $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
           $version = ($metadata.packages | Where-Object name -eq 'zephium-desktop').version
           "VERSION=$version" >> $env:GITHUB_ENV
+          "version=$version" >> $env:GITHUB_OUTPUT
           python scripts/release/third_party_notices.py target/THIRD_PARTY_NOTICES.txt
           if ($LASTEXITCODE -ne 0) { throw 'Notice generation failed' }
       - name: Build unsigned application without signing credentials
@@ -100,11 +104,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $setup = "target/release/bundle/nsis/Zephium_$($env:VERSION)_x64-setup.exe"
-          Push-Location desktop
-          try {
-            pnpm exec tauri signer sign "../$setup"
-            if ($LASTEXITCODE -ne 0) { throw 'Updater signing failed' }
-          } finally { Pop-Location }
+          cargo run --locked -p xtask -- sign-windows-updater $setup $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'Updater signing failed' }
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item $setup dist/Zephium-Windows-x64-setup.exe
           Copy-Item "$setup.sig" dist/Zephium-Windows-x64-setup.exe.sig
@@ -135,8 +136,11 @@ jobs:
           path: dist
       - name: Verify updater signature over the Authenticode-signed installer
         working-directory: dist
+        env:
+          VERSION: ${{ needs.windows.outputs.version }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq minisign
           base64 -d Zephium-Windows-x64-setup.exe.sig > installer.minisig
           minisign -V -p updater.pub -m Zephium-Windows-x64-setup.exe -x installer.minisig
+          grep -Fx "trusted comment: zephium-updater-v1 version=${VERSION} target=windows-x86_64-nsis" installer.minisig

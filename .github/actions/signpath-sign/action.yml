@@ -40,6 +40,8 @@ runs:
         github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
         wait-for-completion: true
         wait-for-completion-timeout-in-seconds: 3600
+        service-unavailable-timeout-in-seconds: 300
+        download-signed-artifact-timeout-in-seconds: 180
         output-artifact-directory: ${{ steps.request.outputs.signed }}
         parameters: |
           version: ${{ toJSON(steps.request.outputs.version) }}

@@ -50,7 +50,7 @@ error. Grant only Zephium access. Never share tokens in an issue, log, or chat.
 
 ## Packaging and approval order
 
-Tauri 2.11.4 patches the main executable for NSIS before signing it, then restores
+Tauri 2.12.4 patches the main executable for NSIS before signing it, then restores
 the original build-directory executable after bundling. Pre-signing the original
 executable is insufficient. `scripts/release/signpath.ps1` starts `tauri bundle`
 with Tauri's documented `bundle.windows.signCommand` callback. It pauses at:
@@ -100,13 +100,13 @@ and approved test update endpoint; do not change the live update feed for a test
 
 ## Integration with the security work
 
-The other workstream adds authenticated release identity in commit
-`cf930035fe50339d076ec4bc3c94849945bf5581` (`fix/security-boundaries`, local
-remediation repository). It is deliberately not copied/pushed by this branch.
+This branch integrates the release identity and tag controls from main through
+PR #242 (merge `3e47af6c58cf49dd8759b01de48574be6b3acb6e`). The tag must match
+the workflow ref and commit; manual rebuilding from a different ref is rejected.
 
-When merging both changes, keep its unconditional step named
-`Sign the final Windows bytes for the updater` after SignPath and after the
-generic Tauri re-sign step, immediately before staging:
+Keep the single unconditional step named `Sign the final Windows bytes for the
+updater` after all SignPath and installation verification, immediately before
+staging. No generic Tauri signing step may overwrite it:
 
 ```sh
 cargo run --locked -p xtask -- sign-windows-updater \
@@ -116,7 +116,7 @@ cargo run --locked -p xtask -- sign-windows-updater \
 Its trusted comment must be exactly
 `zephium-updater-v1 version=${VERSION} target=windows-x86_64-nsis`.
 Do not overwrite that signature afterward or add a fallback when the helper
-is missing. Run its `scripts/release/test_windows_updater.py` regression tests
+is missing. Run `scripts/release/test_windows_updater.py` regression tests
 and updater unit tests on the combined tree. Checksums, manifest and provenance
 must reference the final signed files.
 
@@ -145,6 +145,6 @@ publishing. Keep published assets immutable; ship a higher version for fixes.
 - https://docs.signpath.io/artifact-configuration/reference
 - https://signpath.org/terms
 - https://v2.tauri.app/distribute/sign/windows/#custom-sign-command
-- https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle.rs
-- https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
+- https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle.rs
+- https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
 - https://github.com/SignPath/github-action-submit-signing-request/tree/f6d04783b4569d051e0c80105fe66e82819d0092
