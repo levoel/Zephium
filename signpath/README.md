@@ -1,8 +1,9 @@
 # Windows signing setup
 
-Status: implementation awaiting a successful SignPath test. Do not merge the
-production workflow until the test passes and the production certificate is
-issued. Existing public releases are not changed by this work.
+Status: full test signing passed on 2026-10-28; production qualification is
+pending. Do not merge the production workflow until the production certificate
+is issued and the remaining controls below are complete. Existing public
+releases are not changed by this work.
 
 On 2026-10-27, SignPath accepted `windows.xml` as the valid `initial`
 configuration. The public test certificate thumbprint was verified in its
@@ -76,10 +77,10 @@ not rely on Tauri's restored build-directory executable as signing evidence.
 
 ## Test workflow
 
-Run `SignPath test signing`. On the isolated `signpath-windows` branch, pushes to
-its signing files bootstrap the test before the workflow is on the default
-branch. Remove that push trigger when merging. The workflow cannot publish a
-release and has no repository write permission.
+Run `SignPath test signing` manually once the workflow is available on the
+default branch. The temporary branch push trigger used during initial setup
+has been removed. The workflow cannot publish a release and has no repository
+write permission.
 
 For cryptographic verification of the self-signed certificate, the workflow
 temporarily trusts ONLY the independently pinned public test certificate in the
@@ -97,6 +98,29 @@ This is not an end-to-end automatic-update qualification. Before production,
 test an actual upgrade from the prior public release on a disposable Windows
 machine, checking retained profile data and startup. Use a release candidate
 and approved test update endpoint; do not change the live update feed for a test.
+
+### Qualification evidence
+
+[Run 40667914718](https://github.com/zephium-browser/Zephium/actions/runs/40667914718)
+passed on commit `ed9c10932b9ceae039b4140c8e9539010b6e6b58`, version `1.0.3`.
+The Windows job verified all three signatures against the independently pinned
+test certificate, installed and compared the app/uninstaller bytes with their
+signed copies, uninstalled successfully, and rejected tampered bytes, a wrong
+signer, and a wrong product version. Cleanup removed the temporary test trust.
+The Linux job independently verified the final installer's updater signature
+and its authenticated `version=1.0.3 target=windows-x86_64-nsis` binding.
+
+SignPath requests for Foundation review:
+
+| Target | Signing request |
+| --- | --- |
+| Browser | [0c4e1d0d-3368-41ef-95af-ad97f9c7df77](https://app.signpath.io/Web/6d23e298-6eb5-4692-b09e-9ab18f484855/SigningRequests/0c4e1d0d-3368-41ef-95af-ad97f9c7df77) |
+| Uninstaller | [b295d498-21e7-4545-8f75-0368b626030f](https://app.signpath.io/Web/6d23e298-6eb5-4692-b09e-9ab18f484855/SigningRequests/b295d498-21e7-4545-8f75-0368b626030f) |
+| Installer | [30ef21bc-1fe2-4315-938f-52d086c6535f](https://app.signpath.io/Web/6d23e298-6eb5-4692-b09e-9ab18f484855/SigningRequests/30ef21bc-1fe2-4315-938f-52d086c6535f) |
+
+This evidence covers the tested commit with the self-signed certificate. It
+does not establish public Windows trust, MFA compliance, production source
+restrictions, or automatic-update behavior from a previously released build.
 
 ## Integration with the security work
 

@@ -2,14 +2,6 @@ name: SignPath test signing
 
 on:
   workflow_dispatch:
-  # Bootstrap before this workflow exists on main; remove at merge.
-  push:
-    branches: [signpath-windows]
-    paths:
-      - .github/workflows/signpath-test.yml
-      - .github/actions/signpath-sign/**
-      - scripts/release/signpath*
-      - signpath/**
 
 permissions: {}
 concurrency:
