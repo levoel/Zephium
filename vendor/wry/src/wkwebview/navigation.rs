@@ -964,11 +964,6 @@ pub(crate) fn navigation_policy_response(
   unsafe {
     let can_show_mime_type = response.canShowMIMEType();
 
-    // `-[WKNavigationResponse response]` is declared nonnull, but WebKit on
-    // macOS 27 has returned nil for it during a process-swapping navigation
-    // (opening youtube.com). objc2-web-kit's
-    // `response()` panics on nil, and a panic cannot unwind out of this
-    // delegate method, so it aborts the browser. Read it as optional instead.
     let native_response: Option<Retained<NSURLResponse>> = msg_send![response, response];
     let attachment = native_response
       .as_deref()
@@ -988,8 +983,6 @@ pub(crate) fn navigation_policy_response(
       return;
     }
 
-    // Without a response there is no URL to bound; let WebKit continue, as it
-    // does when the delegate does not answer.
     if let (true, Some(response)) = (response.isForMainFrame(), native_response) {
       let Some(_url) = response
         .URL()
