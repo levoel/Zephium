@@ -17,6 +17,17 @@ function Write-Atomic([string]$Path, [string]$Value) {
     Move-Item -LiteralPath $temp -Destination $Path
 }
 function Read-Json([string]$Path) { Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json }
+function Trace-Hook([string]$Message) {
+    [IO.File]::AppendAllText("$State/hook.log", "$([DateTime]::UtcNow.ToString('o')) PID=$PID $Message`n")
+}
+function Assert-WorkerRunning {
+    if (Test-Path "$State/worker.pid") {
+        $workerId = [int](Get-Content "$State/worker.pid")
+        if (!(Get-Process -Id $workerId -ErrorAction SilentlyContinue)) {
+            throw 'Packaging worker exited unexpectedly; inspect the packaging logs'
+        }
+    }
+}
 function Assert-Metadata([string]$Path) {
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
     if ($info.ProductName -cne 'Zephium' -or $info.ProductVersion -cne $config.version) {
@@ -64,6 +75,7 @@ function Wait-File([string]$Path, [int]$Seconds = 600) {
         if (Test-Path "$State/failed.txt") { throw (Get-Content -Raw "$State/failed.txt") }
         if (Test-Path "$State/cancelled") { throw 'Signing session cancelled' }
         if (Test-Path "$State/worker-exit.json") { throw 'Bundler exited before the requested signing stage' }
+        Assert-WorkerRunning
         if ([DateTime]::UtcNow -gt $deadline) { throw "Timed out waiting for $Path" }
         Start-Sleep -Seconds 2
     }
@@ -99,8 +111,9 @@ if ($Operation -eq 'Start') {
     # Start-Process on Windows detaches; the runner still owns and cleans up
     # the process tree. No signing credentials are passed to this worker.
     $workerArguments = @('-NoProfile','-NonInteractive','-File', ('"' + $PSCommandPath + '"'), '-Operation','Worker','-State',('"' + $State + '"'))
-    $worker = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $workerArguments -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput "$State/bundle.stdout.log" -RedirectStandardError "$State/bundle.stderr.log"
+    # ShellExecute gives the worker its own console. The worker owns its log
+    # redirection, independently of the short-lived Actions step that starts it.
+    $worker = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $workerArguments -PassThru -WindowStyle Hidden -Verb Open
     $worker.Id | Set-Content "$State/worker.pid"
     exit 0
 }
@@ -115,7 +128,8 @@ try {
     switch ($Operation) {
         'Worker' {
             Set-Location (Join-Path $root 'desktop')
-            & pnpm.cmd exec tauri bundle --bundles nsis --config "$State/bundle.json"
+            Trace-Hook 'Packaging worker started'
+            & pnpm.cmd exec tauri bundle --bundles nsis --config "$State/bundle.json" 1> "$State/bundle.stdout.log" 2> "$State/bundle.stderr.log"
             $result = $LASTEXITCODE
             if ($result -ne 0) { throw "Tauri bundler failed ($result)" }
             Write-Atomic "$State/worker-exit.json" '{"exitCode":0}'
@@ -146,18 +160,22 @@ try {
             New-Item -ItemType Directory -Path "$dir/unsigned" | Out-Null
             Copy-Item -LiteralPath $path -Destination "$dir/unsigned/Zephium.exe"
             Write-Atomic "$dir/request.json" (@{role=$Role; path=$path; sha256=(Get-FileHash -LiteralPath $path).Hash} | ConvertTo-Json)
+            Trace-Hook "$Role waiting for verified output"
             # Allow 80 minutes after this request is ready; the enclosing 85-minute
             # step also budgets for the hook to start. Its verifier is bounded.
             Wait-File "$dir/ready" 4800
+            Trace-Hook "$Role received verified output"
             if ((Get-FileHash -LiteralPath $path).Hash -ne (Read-Json "$dir/request.json").sha256) { throw 'Input changed while signing' }
             Assert-Signature "$dir/signed/Zephium.exe"
             Copy-Item "$dir/signed/Zephium.exe" -Destination $path -Force
             Assert-Signature $path
             Write-Atomic "$dir/done" 'verified'
+            Trace-Hook "$Role replaced and verified"
         }
         'Wait' {
             if (!$Role) { throw 'Missing signing role' }
             Wait-File "$State/$Role/request.json"
+            Assert-WorkerRunning
             $request = Read-Json "$State/$Role/request.json"
             if ($request.role -cne $Role) { throw 'Signing role mismatch' }
             "unsigned=$State/$Role/unsigned" >> $env:GITHUB_OUTPUT
@@ -235,7 +253,7 @@ try {
             if (Test-Path "$State/test-trust-added") {
                 Remove-Item "Cert:\LocalMachine\Root\$($config.thumbprint)" -ErrorAction Stop
             }
-            foreach ($log in @('bundle.stdout.log','bundle.stderr.log')) {
+            foreach ($log in @('hook.log','bundle.stdout.log','bundle.stderr.log','worker-exit.json','failed.txt')) {
                 if (Test-Path "$State/$log") { Get-Content "$State/$log" -Tail 100 }
             }
             $global:LASTEXITCODE = 0
