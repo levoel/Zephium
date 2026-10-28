@@ -4,10 +4,10 @@ use std::{
 };
 
 use dispatch2::{DispatchQueue, MainThreadBound};
-use objc2::{DeclaredClass, Message};
+use objc2::{msg_send, rc::Retained, DeclaredClass, Message};
 use objc2_foundation::{
   MainThreadMarker, NSError, NSHTTPURLResponse, NSObjectProtocol, NSString,
-  NSURLErrorFailingURLErrorKey, NSURL,
+  NSURLErrorFailingURLErrorKey, NSURLResponse, NSURL,
 };
 use objc2_web_kit::{
   WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationResponse,
@@ -964,9 +964,15 @@ pub(crate) fn navigation_policy_response(
   unsafe {
     let can_show_mime_type = response.canShowMIMEType();
 
-    let native_response = response.response();
+    // `-[WKNavigationResponse response]` is declared nonnull, but WebKit on
+    // macOS 27 has returned nil for it during a process-swapping navigation
+    // (opening youtube.com). objc2-web-kit's
+    // `response()` panics on nil, and a panic cannot unwind out of this
+    // delegate method, so it aborts the browser. Read it as optional instead.
+    let native_response: Option<Retained<NSURLResponse>> = msg_send![response, response];
     let attachment = native_response
-      .downcast_ref::<NSHTTPURLResponse>()
+      .as_deref()
+      .and_then(|response| response.downcast_ref::<NSHTTPURLResponse>())
       .and_then(|response| {
         response.valueForHTTPHeaderField(&NSString::from_str("Content-Disposition"))
       })
@@ -982,8 +988,9 @@ pub(crate) fn navigation_policy_response(
       return;
     }
 
-    if response.isForMainFrame() {
-      let response = response.response();
+    // Without a response there is no URL to bound; let WebKit continue, as it
+    // does when the delegate does not answer.
+    if let (true, Some(response)) = (response.isForMainFrame(), native_response) {
       let Some(_url) = response
         .URL()
         .and_then(|url| url.absoluteString())
