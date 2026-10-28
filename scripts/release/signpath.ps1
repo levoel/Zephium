@@ -3,13 +3,62 @@
 # This hook never receives the SignPath API token or the updater private key.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('Start','Worker','Hook','Wait','Complete','Finish','TestRejection','Smoke','Cleanup')][string]$Operation,
+    [Parameter(Mandatory)][ValidateSet('Start','Worker','Hook','Wait','Complete','Finish','TestPaths','TestRejection','Smoke','Cleanup')][string]$Operation,
     [ValidateSet('app','uninstaller','installer')][string]$Role,
     [string]$File,
     [string]$State = $env:ZEPHIUM_SIGNPATH_STATE
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Resolve-WindowsPath([string]$Path) {
+    if (!('Zephium.SigningPaths' -as [type])) {
+        Add-Type @'
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Zephium {
+    public static class SigningPaths {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        public static extern uint GetLongPathNameW(string path, StringBuilder result, uint capacity);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        public static extern uint GetShortPathNameW(string path, StringBuilder result, uint capacity);
+    }
+}
+'@
+    }
+    $resolved = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $buffer = [Text.StringBuilder]::new(32768)
+    $length = [Zephium.SigningPaths]::GetLongPathNameW($resolved, $buffer, $buffer.Capacity)
+    if (!$length -or $length -ge $buffer.Capacity) {
+        throw "Cannot expand Windows path: $resolved (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+    }
+    return $buffer.ToString()
+}
+function Test-TemporaryTarget([string]$Path) {
+    # NSIS can pass an 8.3 alias such as RUNNER~1. Expand both sides before
+    # comparing, retaining the separator so a sibling prefix cannot match.
+    $tempRoot = (Resolve-WindowsPath ([IO.Path]::GetTempPath())).TrimEnd('\') + '\'
+    return (Resolve-WindowsPath $Path).TrimEnd('\').StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)
+}
+if ($Operation -eq 'TestPaths') {
+    $tempRoot = Resolve-WindowsPath ([IO.Path]::GetTempPath())
+    $fixture = Join-Path $tempRoot ('Zephium signing path ' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $fixture | Out-Null
+    try {
+        $long = Join-Path $fixture 'uninstaller fixture.tmp'
+        [IO.File]::WriteAllText($long, 'path fixture')
+        $short = [Text.StringBuilder]::new(32768)
+        $length = [Zephium.SigningPaths]::GetShortPathNameW($long, $short, $short.Capacity)
+        if (!$length -or $length -ge $short.Capacity) { throw 'Cannot obtain fixture short path' }
+        if ($short.ToString() -eq $long) { throw 'Runner does not expose an 8.3 alias; regression was not exercised' }
+        if ((Resolve-WindowsPath $short.ToString()) -ne (Resolve-WindowsPath $long)) { throw 'Short and long paths differ' }
+        if (!(Test-TemporaryTarget $short.ToString())) { throw 'Rejected temporary short-path target' }
+        if (Test-TemporaryTarget $PSCommandPath) { throw 'Accepted signing script outside temporary directory' }
+        if (Test-TemporaryTarget $tempRoot) { throw 'Accepted temporary directory itself as a child' }
+        Write-Host 'Verified Windows short-path expansion and temporary-directory boundary.'
+    } finally { Remove-Item -LiteralPath $fixture -Recurse -Force }
+    exit 0
+}
 
 function Write-Atomic([string]$Path, [string]$Value) {
     $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
@@ -90,7 +139,7 @@ if ($Operation -eq 'Start') {
     if ($env:VERSION -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Invalid application version' }
     $State = Join-Path $env:RUNNER_TEMP ('zephium-signpath-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $State | Out-Null
-    $root = (Resolve-Path "$PSScriptRoot/../..").Path
+    $root = Resolve-WindowsPath "$PSScriptRoot/../.."
     $config = @{
         workspace = $root; version = $env:VERSION; policy = $env:SIGNPATH_POLICY
         thumbprint = $env:SIGNPATH_CERT_THUMBPRINT.ToUpperInvariant()
@@ -135,7 +184,7 @@ try {
             Write-Atomic "$State/worker-exit.json" '{"exitCode":0}'
         }
         'Hook' {
-            $path = (Resolve-Path -LiteralPath $File).Path
+            $path = Resolve-WindowsPath $File
             $pluginRoot = Join-Path $root 'target/release/nsis/x64/Plugins/x86-unicode'
             $thirdParty = @('NSISdl.dll','StartMenu.dll','System.dll','nsDialogs.dll','additional/nsis_tauri_utils.dll')
             foreach ($plugin in $thirdParty) {
@@ -149,8 +198,7 @@ try {
             else {
                 # NSIS creates its temporary uninstaller beneath TEMP. Any
                 # unexpected binary/path/product fails closed.
-                $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
-                if (!$path.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Unexpected signing target: $path" }
+                if (!(Test-TemporaryTarget $path)) { throw "Unexpected signing target: $path" }
                 $Role = 'uninstaller'
             }
             Assert-Metadata $path
